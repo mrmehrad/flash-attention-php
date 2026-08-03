@@ -1,0 +1,5 @@
+/vendor/
+/composer.lock
+src/Ffi/*.so
+src/Ffi/*.dylib
+.phpunit.result.cache

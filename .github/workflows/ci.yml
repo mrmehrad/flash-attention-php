@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  correctness:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php-version: ['8.1', '8.2', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          extensions: ffi
+          coverage: none
+
+      - name: Lint
+        run: find src tests examples benchmarks -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Build FFI kernel
+        run: bash src/Ffi/build.sh
+
+      - name: Run correctness check (pure PHP + FFI kernels)
+        run: php tests/correctness_check.php
+
+      - name: Composer install
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Run PHPUnit
+        run: vendor/bin/phpunit

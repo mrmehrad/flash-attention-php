@@ -1,0 +1,26 @@
+{
+    "name": "mehrad/flash-attention-php",
+    "description": "FlashAttention v1 (tiled, memory-efficient exact attention) implemented in pure PHP, with an optional FFI-accelerated C kernel.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["attention", "flash-attention", "transformer", "llm", "machine-learning", "php", "ffi"],
+    "require": {
+        "php": ">=8.1"
+    },
+    "suggest": {
+        "ext-ffi": "Enables the compiled-C FfiKernel for significantly faster matmuls than the pure-PHP kernel."
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "FlashAttention\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "FlashAttention\\Tests\\": "tests/"
+        }
+    }
+}

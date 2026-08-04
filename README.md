@@ -1,5 +1,7 @@
 # flash-attention-php
 
+> FlashAttention v1 (tiled, memory-efficient exact attention) implemented in pure PHP, with an optional FFI-accelerated C kernel.
+
 FlashAttention v1 ([Dao et al., 2022](https://arxiv.org/abs/2205.14135)) — implemented in pure PHP, with an optional FFI-accelerated C kernel. No GPU, no PyTorch, no Python required.
 
 > FlashAttention isn't a different attention formula — it's the *same* softmax(QK^T / √d)V result, computed without ever allocating the full N×N score matrix. It does this via tiling (processing Q/K/V in small row-blocks) and **online softmax**: a running max/sum per query row that gets mathematically exact rescaling every time a new block shifts the max. This repo ports that exact algorithm to PHP.

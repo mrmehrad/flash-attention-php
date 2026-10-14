@@ -1,8 +1,8 @@
 # flash-attention-php
 
-> FlashAttention v1 (tiled, memory-efficient exact attention) implemented in pure PHP, with an optional FFI-accelerated C kernel.
+> FlashAttention v2 (tiled, memory-efficient exact attention) implemented in pure PHP, with an optional FFI-accelerated C kernel.
 
-FlashAttention v1 ([Dao et al., 2022](https://arxiv.org/abs/2205.14135)) — implemented in pure PHP, with an optional FFI-accelerated C kernel. No GPU, no PyTorch, no Python required.
+FlashAttention v2 ([Dao, 2023](https://arxiv.org/abs/2307.08691)) — implemented in pure PHP, with an optional FFI-accelerated C kernel. No GPU, no PyTorch, no Python required.
 
 > FlashAttention isn't a different attention formula — it's the *same* softmax(QK^T / √d)V result, computed without ever allocating the full N×N score matrix. It does this via tiling (processing Q/K/V in small row-blocks) and **online softmax**: a running max/sum per query row that gets mathematically exact rescaling every time a new block shifts the max. This repo ports that exact algorithm to PHP.
 
@@ -12,7 +12,7 @@ PHP will never out-FLOP a CUDA kernel. What FlashAttention buys you even on a CP
 
 ## Features
 
-- Exact FlashAttention v1 forward pass: tiling + online softmax, verified bit-for-bit (to float precision) against a naive O(N²) reference implementation across multiple shapes, including ragged sequence lengths and block sizes that straddle the causal diagonal.
+- Exact FlashAttention v2 forward pass: tiling + online softmax, verified bit-for-bit (to float precision) against a naive O(N²) reference implementation across multiple shapes, including ragged sequence lengths and block sizes that straddle the causal diagonal.
 - Causal masking with **block-level skipping** — fully-masked (i, j) tiles are never even computed, not just zeroed out.
 - Multi-head attention (`forwardMultiHead`) over interleaved-by-head Q/K/V.
 - Pluggable compute kernel:
@@ -97,13 +97,17 @@ Numbers will vary by machine and PHP build (JIT/opcache settings, `-march=native
 
 ## How the algorithm works (short version)
 
-For each block of keys/values `(K_j, V_j)`, and for each block of queries `(Q_i)`:
+In FlashAttention v2, the loop order was swapped so that the outer loop iterates over blocks of queries `(Q_i)`, and the inner loop iterates over blocks of keys/values `(K_j, V_j)`.
 
-1. Compute the small tile `S_ij = scale · Q_i K_j^T`.
-2. Take `S_ij`'s row-max `m_ij` (local to this tile) and `P_ij = exp(S_ij - m_ij)`.
-3. Merge into the running per-row statistics using the rescaling identity: since `softmax(x)_k = exp(x_k - m) / Σ exp(x_i - m)` holds for *any* `m`, shifting the running max from `m_old` to `m_new = max(m_old, m_ij)` just requires multiplying everything accumulated so far by `exp(m_old - m_new)`, and the new tile's contribution by `exp(m_ij - m_new)`.
-4. Accumulate `O_i += exp(m_old - m_new)·O_i + exp(m_ij - m_new)·(P_ij V_j)` and the softmax denominator `l_i` the same way.
-5. After all key/value blocks are processed, divide `O_i` by the final `l_i`.
+For each block of queries `(Q_i)`:
+
+1. Initialize local statistics and output accumulators for this query block.
+2. For each block of keys/values `(K_j, V_j)`:
+    1. Compute the small tile `S_ij = scale · Q_i K_j^T`.
+    2. Take `S_ij`'s row-max `m_ij` (local to this tile) and `P_ij = exp(S_ij - m_ij)`.
+    3. Merge into the running per-row statistics using the rescaling identity: since `softmax(x)_k = exp(x_k - m) / Σ exp(x_i - m)` holds for *any* `m`, shifting the running max from `m_old` to `m_new = max(m_old, m_ij)` just requires multiplying everything accumulated so far by `exp(m_old - m_new)`, and the new tile's contribution by `exp(m_ij - m_new)`.
+    4. Accumulate `O_i += exp(m_old - m_new)·O_i + exp(m_ij - m_new)·(P_ij V_j)` and the softmax denominator `l_i` the same way.
+3. After all key/value blocks are processed for `Q_i`, divide `O_i` by the final `l_i` and write it to the global output matrix.
 
 Causal masking is applied at block granularity: a tile is skipped outright if every key index in it is greater than every query index in it (fully future), and masked element-wise only for the diagonal-straddling tiles.
 
@@ -147,7 +151,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## به فارسی
 
-این مخزن پیاده‌سازی الگوریتم **FlashAttention نسخه ۱** (مقاله Dao و همکاران، ۲۰۲۲) را به زبان PHP ارائه می‌دهد؛ بدون نیاز به GPU، PyTorch یا Python.
+این مخزن پیاده‌سازی الگوریتم **FlashAttention نسخه ۲** (مقاله Dao، ۲۰۲۳) را به زبان PHP ارائه می‌دهد؛ بدون نیاز به GPU، PyTorch یا Python.
 
 نکتهٔ کلیدی FlashAttention این است که فرمول توجه را تغییر نمی‌دهد — دقیقاً همان `softmax(QK^T/√d)V` را محاسبه می‌کند، اما بدون این‌که هرگز کل ماتریس امتیاز N×N را در حافظه بسازد. این کار با «تکه‌بندی» (tiling) ورودی‌ها و تکنیک **softmax آنلاین** انجام می‌شود: برای هر ردیف از Q یک بیشینه و مجموع در حال اجرا نگه داشته می‌شود که با هر بلوک جدید از K/V به‌صورت دقیق ریاضی بازمقیاس‌دهی می‌شود.
 

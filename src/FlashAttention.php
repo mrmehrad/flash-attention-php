@@ -9,7 +9,7 @@ use FlashAttention\Kernel\KernelInterface;
 use FlashAttention\Kernel\PhpKernel;
 
 /**
- * FlashAttention v1 (Dao et al., 2022) forward pass, implemented in PHP.
+ * FlashAttention v2 (Dao, 2023) forward pass, implemented in PHP.
  *
  * The point of FlashAttention is *not* a different math result from
  * standard softmax(QK^T/sqrt(d))V attention -- it's the same result,
@@ -183,7 +183,7 @@ final class FlashAttention
     }
 
     /**
-     * The actual FlashAttention v1 tiling + online-softmax algorithm.
+     * The actual FlashAttention v2 tiling + online-softmax algorithm.
      * See the class docblock for the mathematical explanation.
      */
     private function forwardSingleHead(Matrix $q, Matrix $k, Matrix $v, float $scale): Matrix
@@ -199,38 +199,37 @@ final class FlashAttention
         $tc = (int) ceil($m / $bc); // number of K/V row-blocks
 
         $output = Matrix::zeros($n, $dv);
+        $outData = $output->data;
 
-        // Running softmax statistics per query row, kept as plain arrays
-        // (not Matrix) since they're 1-D and touched every block.
-        $rowMax = array_fill(0, $n, -INF);
-        $rowSum = array_fill(0, $n, 0.0);
+        for ($i = 0; $i < $tr; $i++) {
+            $iStart = $i * $br;
+            $iLen = min($br, $n - $iStart);
+            $qi = $q->sliceRows($iStart, $iLen);
 
-        for ($j = 0; $j < $tc; $j++) {
-            $jStart = $j * $bc;
-            $jLen = min($bc, $m - $jStart);
+            // Local running softmax statistics for this query block
+            $mi = array_fill(0, $iLen, -INF);
+            $li = array_fill(0, $iLen, 0.0);
 
-            // Causal shortcut: if every key in this block comes strictly
-            // after every query we could still visit in later i-blocks
-            // is irrelevant here (outer loop is over j, inner over i) --
-            // the real per-(i,j) skip happens below, per i-block.
-            $kj = $k->sliceRows($jStart, $jLen);
-            $vj = $v->sliceRows($jStart, $jLen);
+            // Local output accumulator for this query block
+            $oiData = new \SplFixedArray($iLen * $dv);
+            for ($idx = 0, $cnt = $iLen * $dv; $idx < $cnt; $idx++) {
+                $oiData[$idx] = 0.0;
+            }
 
-            for ($i = 0; $i < $tr; $i++) {
-                $iStart = $i * $br;
-                $iLen = min($br, $n - $iStart);
+            for ($j = 0; $j < $tc; $j++) {
+                $jStart = $j * $bc;
+                $jLen = min($bc, $m - $jStart);
 
                 // Causal masking works at block granularity: skip this
                 // (i, j) tile entirely if every key index in the block
                 // is greater than every query index in the block (fully
-                // masked), which is the whole point of block-sparsity in
-                // causal FlashAttention -- we never even compute those
-                // score tiles.
+                // masked).
                 if ($this->causal && $jStart > $iStart + $iLen - 1) {
                     continue;
                 }
 
-                $qi = $q->sliceRows($iStart, $iLen);
+                $kj = $k->sliceRows($jStart, $jLen);
+                $vj = $v->sliceRows($jStart, $jLen);
 
                 // Sij = scale * Qi @ Kj^T, shape (iLen x jLen)
                 $sij = $this->kernel->matMulTransposeB($qi, $kj);
@@ -297,18 +296,13 @@ final class FlashAttention
 
                 // Pij @ Vj, shape (iLen x dv) -- the other big matmul.
                 $pv = $this->kernel->matMul($pij, $vj);
+                $pvData = $pv->data;
 
                 // Online-softmax merge of this tile's stats into the
-                // running (rowMax, rowSum, output) for these query rows.
-                $oiOld = $output->sliceRows($iStart, $iLen);
-                $oiOldData = $oiOld->data;
-                $pvData = $pv->data;
-                $oiNewData = new \SplFixedArray($iLen * $dv);
-
+                // running (mi, li, oi) for this query block.
                 for ($r = 0; $r < $iLen; $r++) {
-                    $globalRow = $iStart + $r;
-                    $mOld = $rowMax[$globalRow];
-                    $lOld = $rowSum[$globalRow];
+                    $mOld = $mi[$r];
+                    $lOld = $li[$r];
                     $mTile = $mij[$r];
                     $mNew = $mOld > $mTile ? $mOld : $mTile;
 
@@ -319,37 +313,34 @@ final class FlashAttention
                     $alpha = ($mOld === -INF && $mNew === -INF) ? 0.0 : exp($mOld - $mNew);
                     $beta = ($mTile === -INF && $mNew === -INF) ? 0.0 : exp($mTile - $mNew);
 
-                    $rowSum[$globalRow] = $alpha * $lOld + $beta * $lij[$r];
-                    $rowMax[$globalRow] = $mNew;
+                    $li[$r] = $alpha * $lOld + $beta * $lij[$r];
+                    $mi[$r] = $mNew;
 
                     $oldBase = $r * $dv;
                     for ($c = 0; $c < $dv; $c++) {
-                        $oiNewData[$oldBase + $c] =
-                            $alpha * $oiOldData[$oldBase + $c] + $beta * $pvData[$oldBase + $c];
+                        $oiData[$oldBase + $c] =
+                            $alpha * $oiData[$oldBase + $c] + $beta * $pvData[$oldBase + $c];
                     }
                 }
-
-                $oiOld->data = $oiNewData;
-                $output->writeRows($iStart, $oiOld);
             }
-        }
 
-        // Final normalization: divide every row's accumulator by its
-        // final softmax denominator. Rows that never saw any unmasked
-        // key (shouldn't happen in valid causal input where every query
-        // attends at least to itself) are left as zero rather than NaN.
-        $od = $output->data;
-        for ($i = 0; $i < $n; $i++) {
-            $l = $rowSum[$i];
-            $base = $i * $dv;
-            if ($l > 0.0) {
-                $invL = 1.0 / $l;
-                for ($c = 0; $c < $dv; $c++) {
-                    $od[$base + $c] *= $invL;
+            // Final normalization for this query block: divide every row's accumulator
+            // by its final softmax denominator.
+            for ($r = 0; $r < $iLen; $r++) {
+                $l = $li[$r];
+                $globalRow = $iStart + $r;
+                $outBase = $globalRow * $dv;
+                $localBase = $r * $dv;
+                if ($l > 0.0) {
+                    $invL = 1.0 / $l;
+                    for ($c = 0; $c < $dv; $c++) {
+                        $outData[$outBase + $c] = $oiData[$localBase + $c] * $invL;
+                    }
                 }
             }
         }
-        $output->data = $od;
+
+        $output->data = $outData;
 
         return $output;
     }

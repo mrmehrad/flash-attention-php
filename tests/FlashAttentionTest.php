@@ -7,6 +7,7 @@ namespace FlashAttention\Tests;
 use FlashAttention\FlashAttention;
 use FlashAttention\Matrix;
 use FlashAttention\NaiveAttention;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class FlashAttentionTest extends TestCase
@@ -32,7 +33,7 @@ final class FlashAttentionTest extends TestCase
         return $max;
     }
 
-    /** @dataProvider shapeProvider */
+    #[DataProvider('shapeProvider')]
     public function testMatchesNaiveAttention(int $n, int $m, int $d, int $dv, bool $causal, int $br, int $bc): void
     {
         $q = $this->randomMatrix($n, $d, 10 + $n + $d);

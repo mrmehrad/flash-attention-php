@@ -11,7 +11,7 @@
         "ext-ffi": "Enables the compiled-C FfiKernel for significantly faster matmuls than the pure-PHP kernel."
     },
     "require-dev": {
-        "phpunit/phpunit": "^10.5"
+        "phpunit/phpunit": "^12.0"
     },
     "autoload": {
         "psr-4": {
